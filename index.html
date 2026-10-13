@@ -85,7 +85,10 @@ async function boot(){
     await py.loadPackage(["matplotlib","numpy","pyproj","micropip"]);
     log("Memuat ezdxf ...");
     await py.runPythonAsync("import micropip\nawait micropip.install('ezdxf')");
-    const src=await (await fetch('kml2dwg.py?'+Date.now())).text();
+    const rs=await fetch('kml2dwg.py?'+Date.now());
+    if(!rs.ok)throw new Error('File kml2dwg.py tidak ditemukan di repo (HTTP '+rs.status+'). Upload kml2dwg.py ke folder yang sama dengan index.html.');
+    const src=await rs.text();
+    if(!/def main\(/.test(src))throw new Error('kml2dwg.py di repo bukan file Python yang benar.');
     py.FS.mkdirTree('/work'); py.FS.writeFile('/work/kml2dwg.py',src);
     await py.runPythonAsync("import os\nos.environ['MPLBACKEND']='Agg'");
     $('st').textContent="Siap."; log("Siap.");
