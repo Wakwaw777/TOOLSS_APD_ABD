@@ -28,6 +28,9 @@ button:disabled{opacity:.5;cursor:default}
 .note{font-size:13px;color:var(--mut)}
 .chk{display:flex;gap:8px;align-items:center}
 .chk input{width:auto}
+#tb th,#tb td{padding:5px 8px;border-bottom:1px solid var(--line);text-align:left}
+#tb td.n,#tb th.n{text-align:right}
+.dot{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:6px}
 </style>
 </head>
 <body>
@@ -38,6 +41,12 @@ button:disabled{opacity:.5;cursor:default}
 <div class="card">
   <div id="drop"><b>Klik atau tarik file KML/KMZ ke sini</b><div id="fname" class="note" style="margin-top:6px">Belum ada file</div></div>
   <input id="file" type="file" accept=".kml,.kmz" hidden>
+</div>
+
+<div class="card" id="info" hidden>
+  <div id="sum" style="font-weight:600;margin-bottom:8px"></div>
+  <canvas id="cv" width="700" height="360" style="width:100%;border:1px solid var(--line);border-radius:10px;background:var(--bg)"></canvas>
+  <div style="overflow:auto;margin-top:10px"><table id="tb" style="width:100%;border-collapse:collapse;font-size:13px"></table></div>
 </div>
 
 <div class="card grid">
@@ -59,6 +68,7 @@ button:disabled{opacity:.5;cursor:default}
   <p class="note" style="margin:10px 0 0">Hasil DXF dibuka di AutoCAD lalu SAVEAS .dwg. Rumah dan nama jalan mengikuti data OpenStreetMap di area tersebut.</p></div>
 </main>
 
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 <script src="https://cdn.jsdelivr.net/pyodide/v0.27.2/full/pyodide.js"></script>
 <script>
 const $=id=>document.getElementById(id);
@@ -87,7 +97,79 @@ $('file').onchange=e=>setFile(e.target.files[0]);
 ['dragover','dragenter'].forEach(t=>$('drop').addEventListener(t,e=>{e.preventDefault();$('drop').classList.add('on')}));
 ['dragleave','drop'].forEach(t=>$('drop').addEventListener(t,e=>{e.preventDefault();$('drop').classList.remove('on')}));
 $('drop').addEventListener('drop',e=>setFile(e.dataTransfer.files[0]));
-function setFile(f){if(!f)return;file=f;$('fname').textContent=f.name+" ("+Math.round(f.size/1024)+" KB)";upd()}
+function setFile(f){if(!f)return;file=f;$('fname').textContent=f.name+" ("+Math.round(f.size/1024)+" KB)";upd();analyze(f)}
+
+async function kmlText(f){
+  if(/\.kmz$/i.test(f.name)){
+    const z=await JSZip.loadAsync(await f.arrayBuffer());
+    const n=Object.keys(z.files).find(k=>/\.kml$/i.test(k));
+    if(!n)throw new Error("KMZ tidak berisi file .kml");
+    return await z.files[n].async('string');
+  }
+  return await f.text();
+}
+function parseCoords(t){
+  return (t||'').trim().split(/\s+/).map(c=>c.split(',').map(Number)).filter(a=>a.length>=2&&isFinite(a[0])&&isFinite(a[1])).map(a=>[a[0],a[1]]);
+}
+const kids=(e,n)=>Array.from(e.children).filter(c=>c.localName===n);
+function readKmlDoc(xml){
+  const doc=new DOMParser().parseFromString(xml,'text/xml');
+  if(doc.querySelector('parsererror'))throw new Error("KML tidak valid");
+  const items=[];
+  (function walk(el,path){
+    for(const c of el.children){
+      const t=c.localName;
+      if(t==='Document'||t==='Folder'){
+        const nm=(kids(c,'name')[0]||{}).textContent||t;
+        walk(c,t==='Document'&&!path.length?[]:path.concat(nm.trim()));
+      }else if(t==='Placemark'){
+        const name=((kids(c,'name')[0]||{}).textContent||'').trim();
+        for(const g of c.getElementsByTagName('*')){
+          const k=g.localName;
+          if(k==='Point'||k==='LineString'||k==='LinearRing'){
+            const co=Array.from(g.children).find(x=>x.localName==='coordinates');
+            const pts=parseCoords(co&&co.textContent);
+            if(pts.length)items.push({path:path.join(' / ')||'(root)',name,kind:k==='Point'?'Point':(k==='LineString'?'Line':'Poly'),pts});
+          }
+        }
+      }else if(c.children.length)walk(c,path);
+    }
+  })(doc.documentElement,[]);
+  return items;
+}
+async function analyze(f){
+  const box=$('info');
+  try{
+    const items=readKmlDoc(await kmlText(f));
+    if(!items.length){box.hidden=false;$('sum').textContent="Tidak ada objek yang terbaca di file ini.";$('tb').innerHTML="";return}
+    const g={};let w=1e9,s=1e9,e=-1e9,n=-1e9;
+    for(const it of items){
+      const o=g[it.path]||(g[it.path]={Point:0,Line:0,Poly:0,len:0});
+      o[it.kind]++;
+      for(let i=0;i<it.pts.length;i++){
+        const p=it.pts[i];w=Math.min(w,p[0]);e=Math.max(e,p[0]);s=Math.min(s,p[1]);n=Math.max(n,p[1]);
+        if(it.kind==='Line'&&i){const q=it.pts[i-1];const dx=(p[0]-q[0])*111320*Math.cos(p[1]*Math.PI/180),dy=(p[1]-q[1])*110540;o.len+=Math.hypot(dx,dy)}
+      }
+    }
+    const keys=Object.keys(g);
+    const tot=k=>keys.reduce((a,x)=>a+g[x][k],0);
+    const kmW=(e-w)*111.32*Math.cos((s+n)/2*Math.PI/180),kmH=(n-s)*110.54;
+    $('sum').textContent=`${tot('Point')} titik, ${tot('Line')} garis, ${tot('Poly')} poligon di ${keys.length} folder. Area sekitar ${kmW.toFixed(1)} x ${kmH.toFixed(1)} km.`;
+    box.hidden=false;
+    const col=i=>`hsl(${(i*47)%360} 70% 50%)`;
+    let h='<tr><th>Folder</th><th class="n">Titik</th><th class="n">Garis</th><th class="n">Poligon</th><th class="n">Panjang (m)</th></tr>';
+    keys.forEach((k,i)=>{const o=g[k];h+=`<tr><td><span class="dot" style="background:${col(i)}"></span>${k.replace(/</g,'&lt;')}</td><td class="n">${o.Point}</td><td class="n">${o.Line}</td><td class="n">${o.Poly}</td><td class="n">${o.len?Math.round(o.len).toLocaleString('id-ID'):''}</td></tr>`});
+    $('tb').innerHTML=h;
+    const cv=$('cv'),cx=cv.getContext('2d');cx.clearRect(0,0,cv.width,cv.height);
+    const k=Math.cos((s+n)/2*Math.PI/180),pad=16,sc=Math.min((cv.width-2*pad)/Math.max((e-w)*k,1e-9),(cv.height-2*pad)/Math.max(n-s,1e-9));
+    const X=x=>pad+(x-w)*k*sc,Y=y=>cv.height-pad-(y-s)*sc;
+    items.forEach(it=>{
+      const c=col(keys.indexOf(it.path));cx.strokeStyle=c;cx.fillStyle=c;cx.lineWidth=1.4;
+      if(it.kind==='Point'){cx.beginPath();cx.arc(X(it.pts[0][0]),Y(it.pts[0][1]),3,0,7);cx.fill()}
+      else{cx.beginPath();it.pts.forEach((p,i)=>i?cx.lineTo(X(p[0]),Y(p[1])):cx.moveTo(X(p[0]),Y(p[1])));cx.stroke()}
+    });
+  }catch(err){box.hidden=false;$('sum').textContent="Gagal membaca file: "+err.message;$('tb').innerHTML=""}
+}
 
 const SERVERS=["https://overpass-api.de/api/interpreter","https://overpass.kumi.systems/api/interpreter","https://overpass.private.coffee/api/interpreter"];
 async function overpass(b){
