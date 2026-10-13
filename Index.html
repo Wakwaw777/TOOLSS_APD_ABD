@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>KML ke DXF-PDF APD</title>
+<style>
+:root{--bg:#f6f7f9;--card:#fff;--ink:#1d2330;--mut:#667085;--line:#d9dde5;--acc:#0b5fff;--ok:#118a4a;--err:#c62828}
+@media (prefers-color-scheme:dark){:root{--bg:#10141c;--card:#181e2a;--ink:#e8ecf4;--mut:#9aa4b8;--line:#2a3345;--acc:#5b9bff;--ok:#4cc38a;--err:#ff6b6b}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 system-ui,Segoe UI,Roboto,sans-serif}
+main{max-width:760px;margin:0 auto;padding:24px 16px 48px}
+h1{font-size:22px;margin:0 0 4px}
+p.sub{color:var(--mut);margin:0 0 20px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px;margin-bottom:16px}
+#drop{border:2px dashed var(--line);border-radius:12px;padding:28px 12px;text-align:center;cursor:pointer;color:var(--mut)}
+#drop.on{border-color:var(--acc);color:var(--acc)}
+#drop b{color:var(--ink)}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+@media(max-width:560px){.grid{grid-template-columns:1fr}}
+label{display:block;font-size:13px;color:var(--mut);margin-bottom:3px}
+input[type=text],select,input[type=number]{width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink);font:inherit}
+.full{grid-column:1/-1}
+button{font:inherit;font-weight:600;border:0;border-radius:10px;padding:11px 18px;background:var(--acc);color:#fff;cursor:pointer}
+button:disabled{opacity:.5;cursor:default}
+#log{background:#0d1117;color:#c9d1d9;font:12px/1.5 ui-monospace,Menlo,Consolas,monospace;border-radius:10px;padding:12px;height:220px;overflow:auto;white-space:pre-wrap}
+#res a{display:inline-block;margin:4px 8px 4px 0;padding:9px 14px;border:1px solid var(--acc);border-radius:10px;color:var(--acc);text-decoration:none;font-weight:600}
+.note{font-size:13px;color:var(--mut)}
+.chk{display:flex;gap:8px;align-items:center}
+.chk input{width:auto}
+</style>
+</head>
+<body>
+<main>
+<h1>KML/KMZ ke DXF + PDF As Plan Drawing</h1>
+<p class="sub">Upload file KML/KMZ, hasil DXF (AutoCAD) dan PDF A3 langsung terunduh. Diproses di browser Anda, file tidak dikirim ke server.</p>
+
+<div class="card">
+  <div id="drop"><b>Klik atau tarik file KML/KMZ ke sini</b><div id="fname" class="note" style="margin-top:6px">Belum ada file</div></div>
+  <input id="file" type="file" accept=".kml,.kmz" hidden>
+</div>
+
+<div class="card grid">
+  <div class="full"><label>Nama proyek (title block)</label><input id="project" type="text" value="FTTH STASIUN KARANGANTU"></div>
+  <div><label>Tipe ODP</label><select id="odp"><option value="8">8 HP</option><option value="16">16 HP</option><option value="24">24 HP</option></select></div>
+  <div><label>ODC per halaman detail</label><input id="per" type="number" min="1" max="30" value="9"></div>
+  <div><label>Tanggal (kosong = hari ini)</label><input id="date" type="text" placeholder="13 / 10 / 2026"></div>
+  <div><label>Margin basemap (meter)</label><input id="margin" type="number" value="250"></div>
+  <div class="full chk"><input id="osm" type="checkbox" checked><label for="osm" style="margin:0;color:var(--ink)">Tambahkan rumah &amp; nama jalan dari OpenStreetMap (butuh internet)</label></div>
+</div>
+
+<div class="card">
+  <button id="go" disabled>Konversi</button>
+  <span id="st" class="note" style="margin-left:10px">Memuat mesin Python (pertama kali sekitar 30-60 detik)...</span>
+  <div id="res" style="margin-top:12px"></div>
+</div>
+
+<div class="card"><div id="log"></div>
+  <p class="note" style="margin:10px 0 0">Hasil DXF dibuka di AutoCAD lalu SAVEAS .dwg. Rumah dan nama jalan mengikuti data OpenStreetMap di area tersebut.</p></div>
+</main>
+
+<script src="https://cdn.jsdelivr.net/pyodide/v0.27.2/full/pyodide.js"></script>
+<script>
+const $=id=>document.getElementById(id);
+const logEl=$('log');
+function log(t){logEl.textContent+=t+"\n";logEl.scrollTop=logEl.scrollHeight}
+let py=null,file=null;
+
+async function boot(){
+  try{
+    py=await loadPyodide();
+    py.setStdout({batched:log}); py.setStderr({batched:t=>log("! "+t)});
+    log("Memuat matplotlib, pyproj ...");
+    await py.loadPackage(["matplotlib","numpy","pyproj","micropip"]);
+    log("Memuat ezdxf ...");
+    await py.runPythonAsync("import micropip\nawait micropip.install('ezdxf')");
+    const src=await (await fetch('kml2dwg.py?'+Date.now())).text();
+    py.FS.mkdirTree('/work'); py.FS.writeFile('/work/kml2dwg.py',src);
+    await py.runPythonAsync("import os\nos.environ['MPLBACKEND']='Agg'");
+    $('st').textContent="Siap."; log("Siap.");
+    upd();
+  }catch(e){$('st').textContent="Gagal memuat mesin.";log("ERROR: "+e)}
+}
+function upd(){$('go').disabled=!(py&&file)}
+$('drop').onclick=()=>$('file').click();
+$('file').onchange=e=>setFile(e.target.files[0]);
+['dragover','dragenter'].forEach(t=>$('drop').addEventListener(t,e=>{e.preventDefault();$('drop').classList.add('on')}));
+['dragleave','drop'].forEach(t=>$('drop').addEventListener(t,e=>{e.preventDefault();$('drop').classList.remove('on')}));
+$('drop').addEventListener('drop',e=>setFile(e.dataTransfer.files[0]));
+function setFile(f){if(!f)return;file=f;$('fname').textContent=f.name+" ("+Math.round(f.size/1024)+" KB)";upd()}
+
+const SERVERS=["https://overpass-api.de/api/interpreter","https://overpass.kumi.systems/api/interpreter","https://overpass.private.coffee/api/interpreter"];
+async function overpass(b){
+  const bb=`${b[1]},${b[0]},${b[3]},${b[2]}`;
+  const q=`[out:json][timeout:180];(way["highway"](${bb});way["building"](${bb});way["railway"](${bb});way["waterway"](${bb});way["natural"="water"](${bb}););out geom tags;`;
+  let last;
+  for(const u of SERVERS){
+    try{
+      log("Ambil OSM: "+u.split('/')[2]+" ...");
+      const r=await fetch(u,{method:'POST',body:new URLSearchParams({data:q})});
+      if(!r.ok)throw new Error("HTTP "+r.status);
+      return await r.text();
+    }catch(e){last=e;log("  gagal: "+e.message)}
+  }
+  throw last;
+}
+
+$('go').onclick=async()=>{
+  $('go').disabled=true;$('res').innerHTML="";logEl.textContent="";
+  $('st').textContent="Memproses...";
+  try{
+    const ext=file.name.toLowerCase().endsWith('.kmz')?'.kmz':'.kml';
+    const inp='/work/input'+ext;
+    py.FS.writeFile(inp,new Uint8Array(await file.arrayBuffer()));
+    try{py.FS.rmdir('/work/out')}catch(e){}
+    py.FS.mkdirTree('/work/out');
+    const base=file.name.replace(/\.(kml|kmz)$/i,'')||'hasil';
+    const margin=parseFloat($('margin').value)||250;
+    let useOsm=false;
+    if($('osm').checked){
+      py.globals.set('INP',inp);py.globals.set('MARGIN',margin);
+      const bb=JSON.parse(await py.runPythonAsync(`
+import sys,json
+sys.path.insert(0,'/work')
+import kml2dwg as K
+D=K.classify(K.load_kml(INP))
+l=[e['ll'] for k in ('odc','odp','poles') for e in D[k]]
+for k in ('feeder','dist'):
+    for e in D[k]: l+=e['pts']
+d=MARGIN/111320.0
+json.dumps([min(p[0] for p in l)-d,min(p[1] for p in l)-d,max(p[0] for p in l)+d,max(p[1] for p in l)+d])
+`));
+      try{py.FS.writeFile('/work/osm.json',await overpass(bb));useOsm=true}
+      catch(e){log("!! OSM gagal, lanjut tanpa rumah/jalan: "+e.message)}
+    }
+    const args=['kml2dwg.py',inp,'-o','/work/out','--name',base,'--odp-type',$('odp').value,
+      '--odc-per-sheet',String($('per').value||9),'--margin',String(margin)];
+    if($('project').value.trim())args.push('--project',$('project').value.trim());
+    if($('date').value.trim())args.push('--date',$('date').value.trim());
+    args.push(...(useOsm?['--osm-file','/work/osm.json']:['--no-osm']));
+    py.globals.set('ARGS',py.toPy(args));
+    await py.runPythonAsync(`
+import sys
+sys.path.insert(0,'/work')
+import importlib,kml2dwg as K
+importlib.reload(K)
+sys.argv=list(ARGS)
+K.main()
+`);
+    const files=py.FS.readdir('/work/out').filter(f=>/\.(dxf|pdf)$/i.test(f));
+    for(const f of files){
+      const data=py.FS.readFile('/work/out/'+f);
+      const type=f.endsWith('.pdf')?'application/pdf':'application/dxf';
+      const a=document.createElement('a');
+      a.href=URL.createObjectURL(new Blob([data],{type}));a.download=f;
+      a.textContent='Unduh '+f.split('.').pop().toUpperCase();
+      $('res').appendChild(a);
+    }
+    $('st').textContent="Selesai.";
+  }catch(e){log("ERROR: "+e);$('st').textContent="Gagal, lihat log."}
+  $('go').disabled=false;
+};
+boot();
+</script>
+</body>
+</html>
